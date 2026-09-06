@@ -1,0 +1,42 @@
+# kmon configuration — own-lab only
+# All paths, thresholds, and values are documentation-lab examples.
+
+collection:
+  interval: 2          # seconds between scan cycles
+  duration: null        # null = run until interrupted
+
+sensitive_paths:
+  - /etc/shadow
+  - /etc/sudoers
+  - /etc/ssh/sshd_config
+  - /etc/pam.d
+  - /root/.ssh/authorized_keys
+
+alert_thresholds:
+  high_rate_open: 50       # opens/min on a single sensitive path
+  syscall_rate_spike: 3.0  # multiplier above rolling mean
+  hidden_pid_confidence: 0.8
+  module_change_count: 1
+
+sampling:
+  max_processes: 4096
+  max_connections: 8192
+  max_file_events: 10000
+
+known_bad_binaries:
+  - name: rootkit_test
+    sha256: ""
+  - name: kbdive
+    sha256: ""
+  - name: diamorphine
+    sha256: ""
+
+bind_shell_ports:
+  - 4444
+  - 5555
+  - 6666
+  - 1337
+
+output:
+  jsonl_path: alerts/alerts.jsonl
+  log_path: logs/kmon.log

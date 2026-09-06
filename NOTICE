@@ -1,0 +1,12 @@
+# NOTICE — X7 Kernel/System Monitor
+
+This software is provided for **educational and authorized security testing** on
+systems you own or have explicit written permission to monitor.
+
+## Obligations
+
+1. Run only against your own machines or lab targets under your control.
+2. Do not use on production systems without a documented change window.
+3. eBPF and perf backends require root — ensure your use is authorized.
+4. All identity in git history uses the `5h4d0wn1k` handle only.
+5. Report real findings responsibly (see README Responsible Disclosure).

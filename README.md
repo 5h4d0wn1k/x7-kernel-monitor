@@ -1,129 +1,126 @@
-# X7 — Kernel Integrity Monitor
+# X7 — Kernel/System Monitor
 
-Blue/offense pair: a userspace integrity monitor that detects syscall-table hooks, hidden PIDs, and unauthorized module loads by cross-referencing /proc views, plus an embedded pet rootkit simulation demonstrating the detector in action.
+Production-grade Linux kernel/system monitoring tool. **Detection-only.** For
+machines you own. stdlib-only core with optional eBPF/perf backends.
 
 ## Overview
 
-This project implements kernel-level integrity checking from userspace:
-- **Syscall Table Hook Detection**: Cross-references multiple views to find hooked syscalls
-- **Hidden PID Detection**: Compares /proc, /proc/net/tcp, and process accounting to find concealed PIDs
-- **Module Load Verification**: Validates loaded kernel modules against a trusted registry snapshot
-- **Heartbeat Checker**: Periodic liveness monitoring with anomaly alerting
-- **Alert Daemon**: Streaming alert output for integration with SIEM/SOC tools
-- **eBPF Integration Points**: Clearly labeled stubs for real kernel tracing (works fully offline without them)
-
-## Features
-
-- **Multi-View PID Cross-Reference**: Detects PID hiding by comparing /proc, /proc/net, and ps output
-- **Syscall Table Integrity**: Checks for unauthorized syscall table modifications
-- **Module Registry Verification**: Compares loaded modules against known-good registry snapshot
-- **Pet Rootkit Simulation**: Embedded mock process table with hidden PID for demonstration
-- **Heartbeat Monitoring**: Continuous liveness check with configurable intervals
-- **Streaming Alerts**: SIEM-compatible JSON alert output
-- **eBPF Stubs**: Documented integration points for real kernel tracing (gracefully offline)
+| Collector | Data source | eBPF/fallback |
+|-----------|-------------|---------------|
+| Process   | `/proc/PID/*` scan | optional eBPF exec tracing; fallback: /proc |
+| Network   | `/proc/net/{tcp,udp,tcp6,udp6}` | stdlib only |
+| File      | `/proc/PID/fd` scan of sensitive paths | optional fanotify; fallback: periodic /proc |
+| Syscall   | `/proc/loadavg`, `/proc/PID/syscall` | stdlib only |
 
 ## Installation
 
 ```bash
-# No external dependencies required — pure Python stdlib
-python3 kernel_monitor.py
+pip install -e .
+# or
+python -m kmon --help
 ```
 
 ## Usage
 
 ```bash
-# Run full demo with pet rootkit simulation
-python3 kernel_monitor.py
+# Live monitoring (requires root for /proc fd access)
+kmon live --interval 2
 
-# Programmatic usage
-from kernel_monitor import KernelIntegrityMonitor, PetRootkitSim
+# Collect data to file
+kmon collect --duration 30s --out data/session.jsonl
 
-monitor = KernelIntegrityMonitor()
-results = monitor.full_scan()
-alerts = monitor.get_alerts()
+# Analyze against baseline
+kmon analyze data/session.jsonl --baseline data/baseline.jsonl
+
+# Capture clean baseline
+kmon baseline --out data/baseline.jsonl
+
+# Offline self-test (no root needed, ~5s)
+kmon test
 ```
 
-## Example Output
+## Collector Matrix
 
-```
-============================================================
-  X7 — Kernel Integrity Monitor
-============================================================
+| Collector | Root needed | eBPF available | Fallback |
+|-----------|:-----------:|:--------------:|----------|
+| Process   | Yes (fd)    | Optional       | /proc scan |
+| Network   | No          | N/A            | /proc/net |
+| File      | Yes (fd)    | Optional (fanotify) | /proc/PID/fd periodic |
+| Syscall   | No          | N/A            | /proc/loadavg |
 
-[*] Initializing kernel integrity monitor...
-[*] Pet rootkit simulation loaded (hidden PID: 1337)
+## Anomaly Flags
 
---- PID Cross-Reference Scan ---
-  [!] HIDDEN PID DETECTED: PID 1337 (kworker/rcu/0 — hidden from /proc listing)
-      Evidence: present in /proc/net/tcp but missing from /proc/
-      Severity: HIGH | Technique: T1014 (Rootkit)
+| Flag | Technique | Severity |
+|------|-----------|----------|
+| `known_bad_binary` | T1014 | HIGH/CRITICAL |
+| `shadow_read` | T1003.008 | CRITICAL |
+| `bind_shell` | T1059.004 | MEDIUM |
+| `hidden_process` | T1014 | HIGH |
+| `rootkit_ld_preload` | T1574.006 | CRITICAL |
+| `module_change` | T1547.006 | HIGH |
 
---- Syscall Table Integrity ---
-  [OK] syscall read (0) — unmodified at 0xffffffff81234567
-  [OK] syscall write (1) — unmodified at 0xffffffff81234570
-  [WARN] syscall execve (59) — hook detected at 0xffff888012340000
-      Severity: HIGH | Technique: T1014 (Rootkit)
+## Metrics
 
---- Module Registry Check ---
-  [OK] 142 modules verified against registry snapshot
-  [!] UNAUTHORIZED MODULE: test_rootkit.ko (sha256 mismatch)
-      Severity: CRITICAL | Technique: T1547.006 (Kernel Modules)
+- **False-positive rate on baseline**: 0 (verified by `kmon test`)
+- **Detection count on test payloads**: 3 flags (known_bad_binary, hidden_process, bind_shell)
+- Self-test passes in <5s on standard hardware
 
---- Heartbeat Monitor ---
-  [*] Sending heartbeat every 5s (3 checks passed)
+## Live Lab Test Plan
 
-=== Summary ===
-  Checks run:     3
-  Alerts:         3 (2 HIGH, 1 CRITICAL)
-  Hidden PIDs:    1
-  Hooked calls:   1
-  Rogue modules:  1
+1. Start `kmon live` on lab machine (own hardware, own network).
+2. Plant synthetic demo rootkit process in sandbox:
+   - Process named `rootkit_test` in `/tmp`
+   - Hidden process (comm mismatch via LD_PRELOAD trick in lab)
+   - Bind shell on port 4444
+3. Verify flags fire for each anomaly class.
+4. Run stock workload (ssh, web server, database) for 10 minutes.
+5. Verify zero false-positive alerts on clean baseline.
+6. Record metric: FP rate on baseline; detection count on payloads.
 
-=== Alert Stream (SIEM JSON) ===
-{"timestamp": "2026-09-04T12:00:00Z", "severity": "HIGH", "type": "hidden_pid", "detail": "PID 1337 hidden from /proc", "technique": "T1014"}
-{"timestamp": "2026-09-04T12:00:00Z", "severity": "HIGH", "type": "syscall_hook", "detail": "execve hooked at 0xffff888012340000", "technique": "T1014"}
-{"timestamp": "2026-09-04T12:00:00Z", "severity": "CRITICAL", "type": "rogue_module", "detail": "test_rootkit.ko sha256 mismatch", "technique": "T1547.006"}
-```
+**Note**: The `kmon test` command runs an in-memory synthetic self-test and is
+NOT the same as the live lab test. The live test requires root and real /proc.
 
-## IMPORTANT: Read before use.
+## Privilege Note
 
-This project is provided for **educational and authorized security testing purposes only**.
+- `kmon live` and `kmon collect` read `/proc/PID/fd` which requires **root**.
+- `kmon test` and `kmon analyze` work **unprivileged**.
+- eBPF backends require `CAP_BPF` or root + kernel headers.
+- fanotify requires kernel >= 5.1 and root.
 
-### Authorization Requirements
-- You MUST have explicit written permission from the system owner before running integrity checks
-- Monitoring kernel state may require root/administrator privileges
-- This tool should ONLY be used on systems you own or have written authorization to audit
-- Rootkit simulation should only be run in isolated lab environments
+## IMPORTANT: Read before use
 
-### Legal Framework
-- **Computer Fraud and Abuse Act (CFAA)**: Unauthorized access to computer systems is a federal crime
-- **CFAA Section 1030(a)(1)**: Transmitting information designed to damage a protected computer
-- **State Laws**: Many states have additional computer crime and unauthorized access statutes
-- **Kernel Access Laws**: Running kernel-level monitoring may be subject to additional regulations
+This project is provided for **educational and authorized security testing
+purposes only.**
+
+### Authorization
+- You MUST have explicit written permission before running on any system.
+- This tool should ONLY be used on systems you own.
+- Rootkit simulation should only be run in isolated lab environments.
+
+### Legal
+- **CFAA**: Unauthorized computer access is a federal crime.
+- **Kernel monitoring** may be subject to additional regulations.
+- Follow your organization's incident response procedures.
 
 ### Acceptable Use
-- Monitoring your own systems for rootkits and kernel modifications
-- Authorized incident response and forensics investigations with proper authorization
-- Academic research in controlled lab environments
-- Security education and training demonstrations
+- Monitoring your own systems for rootkit and kernel modifications.
+- Authorized incident response with proper authorization.
+- Academic research in controlled lab environments.
 
 ### Prohibited Use
-- Running integrity checks on systems without authorization
-- Using rootkit simulation on production systems
-- Any activity that violates applicable laws or regulations
-- Commercial use without proper licensing
+- Running on systems without authorization.
+- Using rootkit simulation on production systems.
+- Any activity that violates applicable laws.
 
 ### No Warranty
-This software is provided "AS IS" without warranty of any kind. The author is not responsible for any misuse or damage caused by this software.
+AS IS without warranty. The author is not responsible for misuse.
 
 ### Responsible Disclosure
-If you detect real rootkits or kernel compromises, follow responsible disclosure practices:
-1. Contain the affected system immediately
-2. Report to the system owner/security team privately
-3. Preserve forensic evidence before remediation
-4. Follow your organization's incident response procedures
-5. Do not attempt to remove rootkits without proper expertise
+1. Contain the affected system immediately.
+2. Report to the system owner privately.
+3. Preserve forensic evidence.
+4. Follow your organization's IR procedures.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

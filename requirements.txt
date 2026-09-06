@@ -1,0 +1,7 @@
+# stdlib-only core — no runtime dependencies
+# Optional eBPF backends (requires root + kernel headers):
+#   pip install bcc    # for eBPF process tracing
+# Optional fanotify (requires kernel >= 5.1):
+#   pip install pyfanotify
+# Optional YAML config (falls back to built-in parser):
+#   pip install pyyaml
