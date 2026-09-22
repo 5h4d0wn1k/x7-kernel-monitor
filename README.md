@@ -4,128 +4,76 @@
 > prohibited and may be illegal. Read [ETHICS.md](ETHICS.md) and
 > [SCOPE.md](SCOPE.md) before use. Use at your own risk; **AS IS**, no warranty.
 
-# X7 — Kernel/System Monitor
+# X7 — Linux Kernel & System Activity Monitor
 
-Production-grade Linux kernel/system monitoring tool. **Detection-only.** For
-machines you own. stdlib-only core with optional eBPF/perf backends.
+Detection-tool-focused **kernel activity monitoring** with process, network,
+file, and syscall collectors, MITRE-mapped anomaly flags, and optional eBPF
+backends — for **endpoint detection research** and **blue-team** telemetry.
 
-## Overview
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/5h4d0wn1k/x7-kernel-monitor)](https://github.com/5h4d0wn1k/x7-kernel-monitor)
+[![Issues](https://img.shields.io/github/issues/5h4d0wn1k/x7-kernel-monitor)](https://github.com/5h4d0wn1k/x7-kernel-monitor/issues)
+[![Last commit](https://img.shields.io/github/last-commit/5h4d0wn1k/x7-kernel-monitor)](https://github.com/5h4d0wn1k/x7-kernel-monitor)
 
-| Collector | Data source | eBPF/fallback |
-|-----------|-------------|---------------|
-| Process   | `/proc/PID/*` scan | optional eBPF exec tracing; fallback: /proc |
-| Network   | `/proc/net/{tcp,udp,tcp6,udp6}` | stdlib only |
-| File      | `/proc/PID/fd` scan of sensitive paths | optional fanotify; fallback: periodic /proc |
-| Syscall   | `/proc/loadavg`, `/proc/PID/syscall` | stdlib only |
+## Why
 
-## Installation
+Modern rootkits hide processes, preload libraries, swap binaries, and bind
+shells — defeating naive detection. Kernel telemetry — `/proc/PID/*`, network
+tables, file descriptors, syscall state — is where those activities surface
+first. X7 is a stdlib-first monitoring tool that collects that telemetry,
+optional eBPF/perf backends when the kernel supports them, and raises
+MITRE ATT&CK-mapped flags (`T1014`, `T1574.006`, `T1059.004`) when an anomaly
+fires. Because it is detection-only and runs against machines you own, it fits
+cleanly into authorized incident-response research and blue-team labs, with an
+offline synthetic self-test that proves a zero-false-positive baseline without
+root.
+
+## Features
+
+- **Four collectors** — Process (`/proc/PID/*`), Network (`/proc/net/{tcp,udp,tcp6,udp6}`), File (`/proc/PID/fd`), Syscall (`/proc/loadavg`, `/proc/PID/syscall`)
+- **Optional eBPF/awaken backends** — eBPF exec tracing and fanotify file monitoring where available (CAP_BPF/root + kernel ≥5.1)
+- **Anomaly flags** — `known_bad_binary` (T1014), `shadow_read` (T1003.008), `bind_shell` (T1059.004), `hidden_process` (T1014), `rootkit_ld_preload` (T1574.006), `module_change` (T1547.006)
+- **Live / collect / analyze / baseline** — session JSONL capture, baseline comparison, and unprivileged analysis
+- **Offline self-test** — `kmon test` runs an in-memory synthetic test (<5s, no root)
+
+## Quickstart
 
 ```bash
-pip install -e .
-# or
-python -m kmon --help
-```
+pip install -e .          # or: python -m kmon --help
 
-## Usage
-
-```bash
-# Live monitoring (requires root for /proc fd access)
+# Live monitoring (root required for /proc fd access)
 kmon live --interval 2
 
-# Collect data to file
+# Capture session data
 kmon collect --duration 30s --out data/session.jsonl
 
-# Analyze against baseline
+# Capture a clean baseline, then analyze a session against it
+kmon baseline --out data/baseline.jsonl
 kmon analyze data/session.jsonl --baseline data/baseline.jsonl
 
-# Capture clean baseline
-kmon baseline --out data/baseline.jsonl
-
-# Offline self-test (no root needed, ~5s)
+# Offline self-test (no root, ~5s)
 kmon test
 ```
 
-## Collector Matrix
+Privilege notes: `live`/`collect` need root for `/proc/PID/fd`; `test` and
+`analyze` run unprivileged; eBPF backends need `CAP_BPF`/root + kernel headers.
 
-| Collector | Root needed | eBPF available | Fallback |
-|-----------|:-----------:|:--------------:|----------|
-| Process   | Yes (fd)    | Optional       | /proc scan |
-| Network   | No          | N/A            | /proc/net |
-| File      | Yes (fd)    | Optional (fanotify) | /proc/PID/fd periodic |
-| Syscall   | No          | N/A            | /proc/loadavg |
+## Project structure
 
-## Anomaly Flags
+- `kmon/` — package (`cli.py`, `collector.py`, `analyzer.py`, `anomaly.py`, `test_harness.py`, `config.py`)
+- `config/` — collector configuration
+- `pyproject.toml` + `requirements.txt` — packaging and dependencies
 
-| Flag | Technique | Severity |
-|------|-----------|----------|
-| `known_bad_binary` | T1014 | HIGH/CRITICAL |
-| `shadow_read` | T1003.008 | CRITICAL |
-| `bind_shell` | T1059.004 | MEDIUM |
-| `hidden_process` | T1014 | HIGH |
-| `rootkit_ld_preload` | T1574.006 | CRITICAL |
-| `module_change` | T1547.006 | HIGH |
+## Legal & authorized use
 
-## Metrics
+For **educational and authorized security monitoring** on systems you own.
+Rootkit simulation belongs in isolated lab environments only; never run it on
+production systems. See [ETHICS.md](ETHICS.md), [SCOPE.md](SCOPE.md),
+[SECURITY.md](SECURITY.md), and [NOTICE](NOTICE).
 
-- **False-positive rate on baseline**: 0 (verified by `kmon test`)
-- **Detection count on test payloads**: 3 flags (known_bad_binary, hidden_process, bind_shell)
-- Self-test passes in <5s on standard hardware
+## Contributing
 
-## Live Lab Test Plan
-
-1. Start `kmon live` on lab machine (own hardware, own network).
-2. Plant synthetic demo rootkit process in sandbox:
-   - Process named `rootkit_test` in `/tmp`
-   - Hidden process (comm mismatch via LD_PRELOAD trick in lab)
-   - Bind shell on port 4444
-3. Verify flags fire for each anomaly class.
-4. Run stock workload (ssh, web server, database) for 10 minutes.
-5. Verify zero false-positive alerts on clean baseline.
-6. Record metric: FP rate on baseline; detection count on payloads.
-
-**Note**: The `kmon test` command runs an in-memory synthetic self-test and is
-NOT the same as the live lab test. The live test requires root and real /proc.
-
-## Privilege Note
-
-- `kmon live` and `kmon collect` read `/proc/PID/fd` which requires **root**.
-- `kmon test` and `kmon analyze` work **unprivileged**.
-- eBPF backends require `CAP_BPF` or root + kernel headers.
-- fanotify requires kernel >= 5.1 and root.
-
-## IMPORTANT: Read before use
-
-This project is provided for **educational and authorized security testing
-purposes only.**
-
-### Authorization
-- You MUST have explicit written permission before running on any system.
-- This tool should ONLY be used on systems you own.
-- Rootkit simulation should only be run in isolated lab environments.
-
-### Legal
-- **CFAA**: Unauthorized computer access is a federal crime.
-- **Kernel monitoring** may be subject to additional regulations.
-- Follow your organization's incident response procedures.
-
-### Acceptable Use
-- Monitoring your own systems for rootkit and kernel modifications.
-- Authorized incident response with proper authorization.
-- Academic research in controlled lab environments.
-
-### Prohibited Use
-- Running on systems without authorization.
-- Using rootkit simulation on production systems.
-- Any activity that violates applicable laws.
-
-### No Warranty
-AS IS without warranty. The author is not responsible for misuse.
-
-### Responsible Disclosure
-1. Contain the affected system immediately.
-2. Report to the system owner privately.
-3. Preserve forensic evidence.
-4. Follow your organization's IR procedures.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
